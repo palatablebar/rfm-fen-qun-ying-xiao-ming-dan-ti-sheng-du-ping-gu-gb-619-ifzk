@@ -96,25 +96,73 @@ CREATE TABLE campaigns (
 );
 
 CREATE TABLE audiences (
+    id                SERIAL PRIMARY KEY,
+    audience_no       VARCHAR(32) NOT NULL UNIQUE,
+    campaign_id       INTEGER     NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    status            VARCHAR(16) NOT NULL DEFAULT 'pending',
+    budget            DOUBLE PRECISION NOT NULL DEFAULT 0,
+    member_count      INTEGER     NOT NULL DEFAULT 0,
+    spend             DOUBLE PRECISION NOT NULL DEFAULT 0,
+    inc_orders        INTEGER     NOT NULL DEFAULT 0,
+    inc_gmv           DOUBLE PRECISION NOT NULL DEFAULT 0,
+    roi               DOUBLE PRECISION NOT NULL DEFAULT 0,
+    global_rate       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    allocation        JSON,
+    city_allocation   JSON        NOT NULL DEFAULT '[]',
+    version           INTEGER     NOT NULL DEFAULT 1,
+    current_version   BOOLEAN     NOT NULL DEFAULT FALSE,
+    supersedes_id     INTEGER,
+    generation_id     INTEGER,
+    note              TEXT,
+    operator_email    VARCHAR(160) NOT NULL,
+    confirmed_by      VARCHAR(160),
+    confirmed_at      TIMESTAMP,
+    seed_key          VARCHAR(120) UNIQUE,
+    created_at        TIMESTAMP NOT NULL,
+    updated_at        TIMESTAMP NOT NULL
+);
+CREATE INDEX ix_audiences_current ON audiences (current_version);
+
+-- 城市预算配额：每活动 × 每城一行，城市间互不抢占
+CREATE TABLE city_quotas (
+    id                  SERIAL PRIMARY KEY,
+    campaign_id         INTEGER     NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    city                VARCHAR(24) NOT NULL,
+    budget_weight       DOUBLE PRECISION NOT NULL DEFAULT 0,
+    budget              DOUBLE PRECISION NOT NULL DEFAULT 0,
+    committed_spend     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    committed_members   INTEGER     NOT NULL DEFAULT 0,
+    created_at          TIMESTAMP NOT NULL,
+    updated_at          TIMESTAMP NOT NULL,
+    CONSTRAINT uq_city_quota_campaign_city UNIQUE (campaign_id, city)
+);
+
+-- 可续跑的名单生成任务（request_id 幂等）与城市子任务（done 后固化，续跑不重复占额）
+CREATE TABLE audience_generations (
     id              SERIAL PRIMARY KEY,
-    audience_no     VARCHAR(32) NOT NULL UNIQUE,
+    request_id      VARCHAR(64) NOT NULL UNIQUE,
     campaign_id     INTEGER     NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
-    status          VARCHAR(16) NOT NULL DEFAULT 'pending',
     budget          DOUBLE PRECISION NOT NULL DEFAULT 0,
-    member_count    INTEGER     NOT NULL DEFAULT 0,
-    spend           DOUBLE PRECISION NOT NULL DEFAULT 0,
-    inc_orders      INTEGER     NOT NULL DEFAULT 0,
-    inc_gmv         DOUBLE PRECISION NOT NULL DEFAULT 0,
-    roi             DOUBLE PRECISION NOT NULL DEFAULT 0,
-    global_rate     DOUBLE PRECISION NOT NULL DEFAULT 0,
-    allocation      JSON,
-    note            TEXT,
+    status          VARCHAR(16) NOT NULL DEFAULT 'running',
+    result          JSON,
+    audience_id     INTEGER REFERENCES audiences(id) ON DELETE SET NULL,
+    failure_reason  TEXT,
+    attempts        INTEGER     NOT NULL DEFAULT 0,
     operator_email  VARCHAR(160) NOT NULL,
-    confirmed_by    VARCHAR(160),
-    confirmed_at    TIMESTAMP,
     seed_key        VARCHAR(120) UNIQUE,
     created_at      TIMESTAMP NOT NULL,
     updated_at      TIMESTAMP NOT NULL
+);
+
+CREATE TABLE city_generation_tasks (
+    id              SERIAL PRIMARY KEY,
+    generation_id   INTEGER     NOT NULL REFERENCES audience_generations(id) ON DELETE CASCADE,
+    city            VARCHAR(24) NOT NULL,
+    status          VARCHAR(16) NOT NULL DEFAULT 'pending',
+    allocation      JSON,
+    error           TEXT,
+    updated_at      TIMESTAMP NOT NULL,
+    CONSTRAINT uq_city_task_generation_city UNIQUE (generation_id, city)
 );
 
 CREATE TABLE audit_logs (

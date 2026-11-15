@@ -35,7 +35,14 @@ const EXPORTS = [
     path: '/api/exports/audiences.csv',
     filename: 'audience.csv',
     title: '名单明细（推券平台用）',
-    hint: '按名单的分群配额展开到会员级，带该群 lift / 预算 / 预计增量，便于回算',
+    hint: '按城市 × 分群配额展开到会员级，带版本号、本城 lift / 预算 / 预计增量，只含正式版名单',
+  },
+  {
+    id: 'city-reconciliation',
+    path: '/api/exports/city-reconciliation.csv',
+    filename: 'city_reconciliation.csv',
+    title: '城市核对表（预算/人数/未用余额）',
+    hint: '逐城核对配额权重、预算配额、会员池、已发布占用与未用余额，与页面城市表同源',
   },
 ];
 

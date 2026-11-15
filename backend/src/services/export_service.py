@@ -77,11 +77,14 @@ def audience_csv(db: Session, audience_id: int | None = None) -> bytes:
     stmt = select(Audience).order_by(Audience.id.desc())
     if audience_id:
         stmt = select(Audience).where(Audience.id == audience_id)
+    else:
+        # 不指定名单时只导出正式版本，历史版本不进券平台
+        stmt = stmt.where(Audience.current_version.is_(True))
     audiences = db.scalars(stmt).all()
     campaigns = {item.id: item for item in db.scalars(select(Campaign)).all()}
     headers = [
-        "名单号", "活动", "名单状态", "分群", "分群lift", "会员号", "姓名", "手机号", "城市",
-        "会员等级", "R分", "F分", "M分", "综合分", "历史券响应率", "该群分到人数", "该群预算",
+        "名单号", "版本", "活动", "名单状态", "城市", "分群", "分群lift", "会员号", "姓名", "手机号",
+        "会员等级", "R分", "F分", "M分", "综合分", "历史券响应率", "该城该群分到人数", "该群预算",
         "该群预计增量单量", "该群ROI",
     ]
     payload: list[list] = []
@@ -89,32 +92,89 @@ def audience_csv(db: Session, audience_id: int | None = None) -> bytes:
         campaign = campaigns.get(audience.campaign_id)
         campaign_name = campaign.name if campaign else ""
         status_label = AUDIENCE_STATUS_LABELS.get(audience.status, audience.status)
-        for row in audience.allocation or []:
-            if row.get("status") != "allocated" or not row.get("allocated"):
+        # 城市 × 分群的名额映射：从发布时固化的城市试算结果还原，保证导出与试算同源
+        city_segment_quota = _city_segment_quota(audience)
+        for city, seg_map in city_segment_quota.items():
+            for segment_code, quota in seg_map.items():
+                if quota <= 0:
+                    continue
+                members = db.scalars(
+                    select(Member)
+                    .where(Member.segment_code == segment_code, Member.city == city)
+                    .order_by(Member.composite_score.desc().nullslast(), Member.id)
+                    .limit(quota)
+                ).all()
+                seg_row = _find_segment_row(audience, segment_code)
+                for member in members:
+                    payload.append(
+                        [
+                            audience.audience_no, f"v{audience.version}", campaign_name, status_label,
+                            city,
+                            SEGMENT_LABELS.get(segment_code, segment_code),
+                            f"{(seg_row or {}).get('lift', 0):.4f}",
+                            member.member_no, member.name, member.phone,
+                            MEMBER_TIER_LABELS.get(member.tier, member.tier),
+                            member.r_score, member.f_score, member.m_score,
+                            f"{member.composite_score or 0:.2f}",
+                            f"{(member.purchase_rate or 0) * 100:.2f}%",
+                            quota, f"{(seg_row or {}).get('budget', 0):.2f}",
+                            (seg_row or {}).get("inc_orders", 0), f"{(seg_row or {}).get('roi', 0):.2f}",
+                        ]
+                    )
+                    if len(payload) >= MAX_EXPORT_ROWS:
+                        return to_csv(headers, payload)
+    return to_csv(headers, payload)
+
+
+def _city_segment_quota(audience: Audience) -> dict[str, dict[str, int]]:
+    """从名单固化结果里取 城市→分群→名额（兼容旧名单：无城市结果时回退全局分群）。"""
+    mapping: dict[str, dict[str, int]] = {}
+    # 发布时 flatten 的 allocation 行内带 cities 明细（城市→名额），与试算同源
+    for row in audience.allocation or []:
+        for city_item in row.get("cities") or []:
+            if city_item.get("status") != "allocated" or not city_item.get("allocated"):
                 continue
-            members = db.scalars(
-                select(Member)
-                .where(Member.segment_code == row["segment_code"])
-                .order_by(Member.composite_score.desc().nullslast(), Member.id)
-                .limit(int(row["allocated"]))
-            ).all()
-            for member in members:
-                payload.append(
-                    [
-                        audience.audience_no, campaign_name, status_label,
-                        SEGMENT_LABELS.get(row["segment_code"], row["segment_code"]),
-                        f"{row.get('lift', 0):.4f}",
-                        member.member_no, member.name, member.phone, member.city,
-                        MEMBER_TIER_LABELS.get(member.tier, member.tier),
-                        member.r_score, member.f_score, member.m_score,
-                        f"{member.composite_score or 0:.2f}",
-                        f"{(member.purchase_rate or 0) * 100:.2f}%",
-                        row.get("allocated", 0), f"{row.get('budget', 0):.2f}",
-                        row.get("inc_orders", 0), f"{row.get('roi', 0):.2f}",
-                    ]
-                )
-                if len(payload) >= MAX_EXPORT_ROWS:
-                    return to_csv(headers, payload)
+            mapping.setdefault(city_item["city"], {})[row["segment_code"]] = int(city_item["allocated"])
+    if mapping:
+        return mapping
+    # 兼容旧版名单（无城市维度）：按全局分群展开
+    for row in audience.allocation or []:
+        if row.get("status") != "allocated" or not row.get("allocated"):
+            continue
+        mapping.setdefault("全部城市", {})[row["segment_code"]] = int(row["allocated"])
+    return mapping
+
+
+def _find_segment_row(audience: Audience, segment_code: str) -> dict | None:
+    for row in audience.allocation or []:
+        if row.get("segment_code") == segment_code:
+            return row
+    return None
+
+
+def city_reconciliation_csv(db: Session, campaign_id: int | None = None) -> bytes:
+    """城市核对表：每城预算配额、人数、增量、未用余额（页面与导出同源）。"""
+    from src.services import city_service
+
+    stmt = select(Campaign).order_by(Campaign.id)
+    if campaign_id:
+        stmt = stmt.where(Campaign.id == campaign_id)
+    campaigns = db.scalars(stmt).all()
+    headers = [
+        "活动", "城市", "配额权重", "预算配额", "会员池人数", "已发布占用预算", "已发布人数",
+        "未用余额",
+    ]
+    payload: list[list] = []
+    for campaign in campaigns:
+        for row in city_service.reconcile_quotas(db, campaign):
+            payload.append(
+                [
+                    campaign.name, row["city"], f"{row['budget_weight'] * 100:.2f}%",
+                    f"{row['quota_budget']:.2f}", row["member_pool"],
+                    f"{row['committed_spend']:.2f}", row["committed_members"],
+                    f"{row['unused_budget']:.2f}",
+                ]
+            )
     return to_csv(headers, payload)
 
 

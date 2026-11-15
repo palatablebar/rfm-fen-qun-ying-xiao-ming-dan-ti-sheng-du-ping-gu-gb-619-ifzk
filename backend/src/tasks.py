@@ -32,7 +32,7 @@ def heartbeat() -> str:
 def daily_refresh() -> dict:
     from src.config.database import session_scope
     from src.models.campaign import Campaign
-    from src.services import audit_service, audience_service, segment_service
+    from src.services import audit_service, generation_service, segment_service
 
     with session_scope() as db:
         result = segment_service.recompute(db)
@@ -50,13 +50,16 @@ def daily_refresh() -> dict:
         generated = 0
         for campaign in campaigns:
             try:
-                audience_service.generate(
+                # 城市独立试算（可续跑）+ 一次性发布；失败保留该活动上一版正式名单
+                generation = generation_service.create_generation(
                     db,
                     campaign=campaign,
                     budget=campaign.budget,
                     operator_email=f"scheduler@{settings.app_name}.io",
-                    note="每日定时重算生成",
                 )
+                generation_service.run_generation(db, generation)
+                generation_service.publish(db, generation, actor=f"scheduler@{settings.app_name}.io",
+                                            note="每日定时重算生成（八城独立配额）")
                 generated += 1
             except Exception as exc:  # noqa: BLE001 - 单个活动失败不影响其它
                 logger.warning("audience generate failed for %s: %s", campaign.code, exc)

@@ -23,7 +23,18 @@ MEMBER_TARGET = 8000
 ORDER_TARGET = 30000
 RANDOM_SEED = 61926
 
-CITIES = ["上海", "杭州", "苏州", "南京", "宁波"]
+CITIES = ["上海", "杭州", "苏州", "南京", "宁波", "成都", "武汉", "重庆"]
+# 八城会员抽样权重（合计 1）：与门店分布对齐，成都/武汉会员盘子相对小
+CITY_WEIGHTS: dict[str, float] = {
+    "上海": 0.24,
+    "杭州": 0.15,
+    "苏州": 0.12,
+    "南京": 0.12,
+    "宁波": 0.10,
+    "成都": 0.11,
+    "武汉": 0.09,
+    "重庆": 0.07,
+}
 STORES = ["MY-S01", "MY-S02", "MY-S03", "MY-S04", "MY-S05", "MY-S06", "MY-S07", "MY-S08"]
 CHANNELS = [("miniapp", 0.46), ("store", 0.34), ("delivery", 0.20)]
 
@@ -63,28 +74,30 @@ SEGMENT_COUPON: dict[str, dict] = {
 }
 
 # 2 个活动（预算按 1/40 抽样折算，真实全量约 40 万/季度）
+# 预算有意给得偏宽：成都、武汉、重庆等小盘城市会出现「人不够、配额花不完」，
+# 闲置余额在发布前统一调剂给人还够的城市（见 city_lift_service.reallocate_idle_budget）。
 CAMPAIGNS: list[dict] = [
     {
         "seed_key": "seed-campaign-autumn",
         "code": "autumn-member-day",
         "name": "秋日会员日券",
         "channel": "小程序订阅消息",
-        "budget": 1400.0,
+        "budget": 1800.0,
         "status": "active",
         "starts_on": "2026-11-18",
         "ends_on": "2026-11-24",
-        "note": "季度预算有限，先发高提升度分群；预算内无法覆盖的分群进入待定池。",
+        "note": "八城独立配额；小盘城市花不完的余额在发布前调剂给人还够的城市。",
     },
     {
         "seed_key": "seed-campaign-double11",
         "code": "double11-warmup",
         "name": "双十一预热券",
         "channel": "门店企微群 + 小程序",
-        "budget": 2600.0,
+        "budget": 4200.0,
         "status": "active",
         "starts_on": "2026-11-08",
         "ends_on": "2026-11-13",
-        "note": "覆盖全部可投分群，用于对照「够预算」与「不够预算」两种分配的差异。",
+        "note": "预算充足场景：对照城市配额隔离与跨城调剂前后的人数、增量差异。",
     },
 ]
 

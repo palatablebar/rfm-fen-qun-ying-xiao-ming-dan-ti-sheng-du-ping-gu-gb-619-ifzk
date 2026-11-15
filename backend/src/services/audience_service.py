@@ -167,6 +167,11 @@ def serialize_audience(audience: Audience, campaign: Campaign | None = None) -> 
         "roi": round(audience.roi or 0.0, 2),
         "global_rate": round(audience.global_rate or 0.0, 6),
         "allocation": audience.allocation or [],
+        "city_allocation": audience.city_allocation or [],
+        "version": audience.version,
+        "current_version": bool(audience.current_version),
+        "supersedes_id": audience.supersedes_id,
+        "generation_id": audience.generation_id,
         "note": audience.note,
         "operator_email": audience.operator_email,
         "confirmed_by": audience.confirmed_by,
@@ -180,6 +185,7 @@ def list_audiences(
     *,
     campaign_id: int | None = None,
     status: str | None = None,
+    current_only: bool = False,
     limit: int = 20,
     offset: int = 0,
 ) -> dict:
@@ -191,8 +197,13 @@ def list_audiences(
     if status:
         stmt = stmt.where(Audience.status == status)
         count_stmt = count_stmt.where(Audience.status == status)
+    if current_only:
+        stmt = stmt.where(Audience.current_version.is_(True))
+        count_stmt = count_stmt.where(Audience.current_version.is_(True))
     total = db.scalar(count_stmt) or 0
-    rows = db.scalars(stmt.order_by(Audience.id.desc()).limit(limit).offset(offset)).all()
+    rows = db.scalars(
+        stmt.order_by(Audience.current_version.desc(), Audience.id.desc()).limit(limit).offset(offset)
+    ).all()
     campaigns = {item.id: item for item in db.scalars(select(Campaign)).all()}
     return {
         "items": [serialize_audience(row, campaigns.get(row.campaign_id)) for row in rows],
@@ -219,3 +230,67 @@ def confirm(db: Session, audience: Audience, *, status: str, note: str | None, a
         audience.note = note
     db.flush()
     return audience
+
+
+def preview_city_allocation(db: Session, campaign: Campaign, budget: float | None = None) -> dict:
+    """算法 C 预览：八城按本地人群表现独立试算 + 发布前调剂模拟（不落库、不占额）。"""
+    from src.constants.enums import CITY_BUDGET_WEIGHTS, CITY_ORDER
+    from src.services import city_lift_service, city_service
+
+    matrix = city_service.city_segment_matrix(db)
+    if not any(matrix.values()):
+        raise AppError("VALIDATION", 409, {"reason": "还没有分群快照，请先重算 RFM"})
+    effective_budget = float(budget if budget is not None else campaign.budget)
+    weight_sum = sum(CITY_BUDGET_WEIGHTS.values())
+    quotas = city_service.ensure_city_quotas(db, campaign)
+    # 预览时若临时改了预算，按权重量化临时配额（不落库）
+    quota_by_city = {q.city: q.budget for q in quotas}
+    scaled = {
+        city: round(effective_budget * CITY_BUDGET_WEIGHTS[city] / weight_sum, 2)
+        for city in CITY_ORDER
+    }
+    city_results = []
+    for city in CITY_ORDER:
+        segments = matrix.get(city) or []
+        city_budget = scaled.get(city) or quota_by_city.get(city) or 0.0
+        if not segments or city_budget <= 0:
+            city_results.append(
+                {
+                    "city": city,
+                    "quota_budget": round(city_budget, 2),
+                    "global_rate": 0.0,
+                    "segments": [],
+                    "totals": {
+                        "audience": 0, "spend": 0.0, "idle_budget": round(city_budget, 2),
+                        "inc_orders": 0, "inc_gmv": 0.0, "roi": 0.0, "headroom": 0,
+                        "segments_allocated": 0, "segments_deferred": 0, "segments_ineligible": 0,
+                    },
+                    "remaining": round(city_budget, 2),
+                }
+            )
+            continue
+        city_results.append(
+            city_lift_service.allocate_city(
+                city,
+                segments,
+                budget=city_budget,
+                reach_cost=campaign.reach_cost,
+                orders_per_converter=campaign.orders_per_converter,
+                tail_factor=campaign.tail_factor,
+            )
+        )
+    reallocation = city_lift_service.reallocate_idle_budget(
+        city_results,
+        tail_factor=campaign.tail_factor,
+        orders_per_converter=campaign.orders_per_converter,
+    )
+    return {
+        "campaign": serialize_campaign(campaign),
+        "budget": round(effective_budget, 2),
+        "cities": reallocation["cities"],
+        "city_summaries": reallocation["city_summaries"],
+        "transfers": reallocation["transfers"],
+        "totals": reallocation["totals"],
+        "log": reallocation["log"],
+        "quota_reconciliation": city_service.reconcile_quotas(db, campaign),
+    }

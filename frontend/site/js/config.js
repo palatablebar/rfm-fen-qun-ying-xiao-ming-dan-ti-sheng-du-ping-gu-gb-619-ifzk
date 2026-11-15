@@ -101,6 +101,24 @@ export const ENUMS = {
     deferred: '预算不足',
     ineligible: 'lift≤1 不投',
   },
+  generationStatus: {
+    running: '生成中',
+    ready: '待发布',
+    published: '已发布',
+    failed: '中断待续跑',
+  },
+  cityTaskStatus: {
+    pending: '待试算',
+    done: '已完成',
+    skipped: '无可投人群',
+  },
+  reallocationStatus: {
+    kept: '配额内',
+    surplus: '本城闲置',
+    received: '调入余额',
+    idle: '未用余额',
+  },
+  cities: ['上海', '杭州', '苏州', '南京', '宁波', '成都', '武汉', '重庆'],
   windowDays: [
     { value: 90, label: '近 90 天' },
     { value: 180, label: '近 180 天' },
@@ -108,6 +126,14 @@ export const ENUMS = {
     { value: 730, label: '近 730 天' },
   ],
 };
+
+export function generationTone(status) {
+  return { running: 'pending warn', ready: 'info', published: 'ok', failed: 'danger' }[status] || 'info';
+}
+
+export function reallocationTone(status) {
+  return { kept: 'ok', surplus: 'warn', received: 'info', idle: 'low' }[status] || 'info';
+}
 
 export function can(role, permission) {
   return (PERMISSIONS[role] || []).includes(permission);

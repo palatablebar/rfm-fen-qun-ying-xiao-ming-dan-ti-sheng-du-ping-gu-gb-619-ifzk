@@ -68,7 +68,12 @@ def overview(db: Session) -> dict:
 
     campaigns = db.scalars(select(Campaign).order_by(Campaign.id.desc())).all()
     budget_total = round(sum(item.budget or 0.0 for item in campaigns if item.status == "active"), 2)
-    latest_audience = db.scalar(select(Audience).order_by(Audience.id.desc()).limit(1))
+    latest_audience = db.scalar(
+        select(Audience)
+        .where(Audience.current_version.is_(True))
+        .order_by(Audience.id.desc())
+        .limit(1)
+    )
     audiences_total = db.scalar(select(func.count()).select_from(Audience)) or 0
     pending_audiences = (
         db.scalar(select(func.count()).select_from(Audience).where(Audience.status == "pending")) or 0

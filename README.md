@@ -11,15 +11,19 @@
   1. **分群阈值拍脑袋**：R/F/M 的「高/低」全凭主观，换个人做一次结果就变，没人能解释为什么这么切。
   2. **名单导出后不知道能带来多少增量**：只知道发了多少张、核销多少张，不知道「不发也会买」的那部分占多少。
   3. **预算有限，先发谁没依据**：40 万分到 8 类人群，先发给谁、每人给多少券，全靠开会拍。
+- **城市配额痛点（算法 C 解决）**：总部用同一套提升度给八城分券，上海的高响应分群会抬高全局基线、
+  掩盖成都/武汉的低响应，城市预算被高响应城市抢走；而人不够的城市配额又花不完、余额闲置。
 - **上下游**：POS 订单 / 小程序订单 → 本系统（会员与订单接入 → RFM 分位评分 → 八类分群 → 名单与预算 → 提升度与 ROI）→
   券平台（CSV 名单下发）/ 私域企微群。
 - **一天的工作剧本**：
   1. 09:10 门店 POS 日结文件同步完成，订单表新增 3.2 万单（演示库 30,000 单可在 8,000 人抽样上重放）。
   2. 09:20 数据专员打开「RFM 分群」，看到快照日 2026-11-14、大盘购买率 2.81%、八个分群的 lift。
   3. 09:25 运营管理员把权重从 0.3/0.3/0.4 调到 0.6/0.2/0.2，点「重算分群」：分位切点移动，分群人数随之变化，页面直接给出新阈值。
-  4. 09:40 在「名单与提升度」选「秋日会员日券」，把预算从 1,400 改成 2,000，试算看到哪几个分群被优先分配、哪几个「预算不足」。
-  5. 10:00 点「生成名单」，得到 A2026111401：覆盖 X 人、券预算 Y 元、预计增量 Z 单、整体 ROI R。
-  6. 10:10 数据专员点「确认名单」，管理员在「导出与审计」下载名单明细 CSV，交给券平台。
+  4. 09:40 在「名单与提升度」选「秋日会员日券」，把预算从 1,800 改成 2,200，城市核对表按八城展示各自配额、
+     本地 lift、投放人数与未用余额；成都、武汉人不够的闲置余额只在「发布前调剂」区出现，试算阶段不被抢走。
+  5. 10:00 点「生成名单（城市配额）」，得到生成任务 REQ-…：八城逐城试算并落子任务状态，中断可「续跑」，
+     同一 request_id 重试不重复占额；任务置「待发布」后点「发布正式名单」，一次性切换为 v2 正式版（失败保留 v1）。
+  6. 10:10 数据专员点「确认名单」，管理员在「导出与审计」下载城市核对表与名单明细 CSV（按城市×分群展开），交给券平台。
   7. 14:00 门店只读角色登录，只能看到脱敏手机号，导出按钮置灰；直接调 `/api/exports/members.csv` 返回 403。
   8. 次日 07:40 Celery worker 定时重算 RFM 并为进行中活动补一份名单，审计日志留痕。
 
@@ -36,14 +40,17 @@
 
 ## 3. 业务模块表（6 个）
 
+> 数据落库共 10 张表：users / members / orders / segments / campaigns / audiences / audit_logs
+> 加城市配额 `city_quotas`、生成任务 `audience_generations`、城市子任务 `city_generation_tasks`。
+
 | # | 模块 | 对应页面 | 主要 services / controller | 主要 API |
 |---|---|---|---|---|
 | ① | 会员与订单接入 | 会员与订单 `#/members` | `member_service` / `member_controller` | `GET /api/members`、`GET /api/members/{id}`、`GET /api/orders` |
 | ② | RFM 评分（算法 A） | RFM 分群 `#/segments` | `rfm_service`、`segment_service` / `segment_controller` | `POST /api/segments/recompute`、`GET /api/segments` |
 | ③ | 分群规则与券口径 | RFM 分群 `#/segments` | `segment_service` / `segment_controller` | `PATCH /api/segments/{id}` |
-| ④ | 名单生成（算法 B 落库） | 名单与提升度 `#/audiences` | `audience_service` / `audience_controller` | `POST /api/audiences`、`GET /api/audiences`、`PATCH /api/audiences/{id}/review` |
-| ⑤ | 提升度与预算分配（算法 B） | 名单与提升度 `#/audiences` | `lift_service`、`audience_service` / `campaign_controller` | `GET /api/campaigns`、`POST /api/campaigns`、`GET /api/campaigns/{id}/allocation` |
-| ⑥ | 导出与审计 | 导出与审计 `#/exports` | `export_service`、`audit_service` / `export_controller` | `GET /api/exports/{members,segments,audiences}.csv`、`GET /api/audit` |
+| ④ | 名单生成（算法 C 落库，可中断续跑） | 名单与提升度 `#/audiences` | `generation_service`、`city_lift_service` / `generation_controller` | `POST /api/generations`、`POST /api/generations/{id}/resume`、`POST /api/generations/{id}/publish` |
+| ⑤ | 提升度与城市预算配额（算法 B/C） | 名单与提升度 `#/audiences` | `lift_service`、`city_service`、`audience_service` / `campaign_controller` | `GET /api/campaigns`、`POST /api/campaigns`、`GET /api/campaigns/{id}/allocation`、`GET /api/campaigns/{id}/city-allocation`、`GET /api/campaigns/{id}/city-quotas` |
+| ⑥ | 导出与审计 | 导出与审计 `#/exports` | `export_service`、`audit_service` / `export_controller` | `GET /api/exports/{members,segments,audiences,city-reconciliation}.csv`、`GET /api/audit` |
 
 横切能力（不计入业务模块）：JWT + 三角色 RBAC、限流（Redis 固定窗口，写接口单独额度）、审计中间件、worker 心跳。
 登录页与总览是横切入口，也不算业务模块。
@@ -99,6 +106,9 @@ cd frontend/site && python -m http.server 5173
 ```text
 backend/
   src/{config,constants,controllers,middlewares,models,routes,schemas,services,utils}
+    services: rfm_service（算法 A）/ lift_service（算法 B）/ city_lift_service + city_service +
+              generation_service（算法 C：城市配额、可续跑、发布切换）
+    models:   city_quota / generation（AudienceGeneration + CityGenerationTask）
   scripts/{seed_demo.py,demo_config.py,worker_healthcheck.sh}
   migrations/  tests/
 frontend/
@@ -143,6 +153,22 @@ docker-compose.yml  .env  README.md
    增量单量 = 增量人数 × `orders_per_converter`（默认 1.4）；增量 GMV = 增量单量 × 分群客单价（订单事实算出）。
 7. `ROI = 增量 GMV / 该群券预算`；整体 ROI = 总增量 GMV / 总花费。页面对每个分群展示这一整条推导。
 
+### 算法 C｜城市独立试算、配额隔离与发布前调剂（`backend/src/services/city_lift_service.py` + `generation_service.py`）
+
+1. **八城配额切分**：活动预算按 `CITY_BUDGET_WEIGHTS` 切成 8 行 `city_quotas`（末城兜底吸收舍入误差，
+   配额之和精确等于活动预算）；试算只读配额、不占用，发布成功才回写 `committed_*`。
+2. **每城本地基线**：城市 × 分群的人数、购买率、客单价直接从会员事实表聚合；
+   `lift = 该城该群购买率 / 该城大盘购买率`。上海的高响应不再抬高成都、武汉的基线，低响应城市的可投群不会被全局 lift 误杀。
+3. **独立贪心**：每个城市在自己的配额内，按本地 `lift/人均成本` 排序贪心（口径与算法 B 完全一致，
+   含核心盘/溢出折减）；城市之间互不抢占，人不够的城市只产生 `idle_budget`。
+4. **发布前才调剂**：八城全部试算完成后，统一把各城闲置余额汇成调剂池，按全局效率补给
+   「lift>1 且名额未满」的城市分群；每笔调剂记录承接城市、人数、金额与**资金来源城市**，全程留痕。
+5. **可中断续跑 + 重试不重复占额**：一次生成对应一个 `AudienceGeneration`（`request_id` 唯一幂等），
+   每城一行 `CityGenerationTask`；`done/skipped` 城市结果固化，续跑只处理 `pending`，不会重复占额。
+6. **一次性切换、失败保留旧版**：发布在单事务内创建新版本 `Audience`（`current_version=True`）、
+   旧版本降级并回写城市配额占用；任一步失败整体回滚，正式名单与旧配额保持不变。
+7. **按城核对**：页面与 `city-reconciliation.csv` 逐城给出预算配额、投放人数、券花费、预计增量与未用余额。
+
 ### seed 数量口径（`SEED_SUMMARY`）
 
 `SEED_SUMMARY brand=rfmseg users=3 sources=8000 runs=30000 findings=8 pending=2`
@@ -150,10 +176,10 @@ docker-compose.yml  .env  README.md
 | 键 | 含义 |
 |---|---|
 | `users` | 3 个演示账号 |
-| `sources` | 会员数（8,000，32 万会员的 1/40 抽样） |
+| `sources` | 会员数（8,000，32 万会员的 1/40 抽样，分布在 8 个城市） |
 | `runs` | 订单数（30,000） |
 | `findings` | RFM 分群数（8） |
-| `pending` | 待确认名单数（2，对应 2 个活动） |
+| `pending` | 待确认名单数（2，对应 2 个活动，各为八城独立配额生成的正式版） |
 
 ## 11. 共享枚举出现位置
 
@@ -166,6 +192,9 @@ docker-compose.yml  .env  README.md
 | 名单状态 `pending/confirmed/pushed` | `backend/src/constants/enums.py` → `AudienceStatus` | `frontend/site/js/config.js` → `ENUMS.audienceStatus` |
 | 订单渠道 `miniapp/store/delivery` | `backend/src/constants/enums.py` → `OrderChannel` | `frontend/site/js/config.js` → `ENUMS.channel` |
 | 分配状态 `allocated/deferred/ineligible` | `backend/src/services/lift_service.py` | `frontend/site/js/config.js` → `ENUMS.allocationStatus` |
+| 城市顺序/配额权重/响应系数 | `backend/src/constants/enums.py` → `CITY_ORDER/CITY_BUDGET_WEIGHTS/CITY_RESPONSE_FACTORS` | `frontend/site/js/config.js` → `ENUMS.cities` |
+| 生成任务状态 `running/ready/published/failed` | `backend/src/constants/enums.py` → `GenerationStatus` | `frontend/site/js/config.js` → `ENUMS.generationStatus` |
+| 调剂状态 `kept/surplus/received/idle` | `backend/src/constants/enums.py` → `ReallocationStatus` | `frontend/site/js/config.js` → `ENUMS.reallocationStatus` |
 
 ## 12. Docker 说明
 

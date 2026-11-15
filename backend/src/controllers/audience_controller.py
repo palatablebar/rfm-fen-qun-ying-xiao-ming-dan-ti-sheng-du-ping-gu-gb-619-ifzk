@@ -1,10 +1,10 @@
-"""名单控制器：生成与确认都落审计。"""
+"""名单控制器：城市生成入口、确认与发布审计。"""
 from __future__ import annotations
 
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from src.services import audit_service, audience_service
+from src.services import audit_service, audience_service, generation_service
 
 
 def list_audiences(db: Session, **filters) -> dict:
@@ -18,13 +18,22 @@ def get_audience(db: Session, audience_id: int) -> dict:
 
 
 def generate(db: Session, payload: dict, principal: dict, request: Request) -> dict:
+    """旧入口保留：内部改为「创建城市生成任务 → 试算 → 一次性发布」。
+
+    新前端走 /api/generations（可续跑、可先试算再发布）；本接口保持向后兼容，
+    一次请求内完成发布并返回正式名单。request_id 保证前端重试不重复占额。
+    """
     campaign = audience_service.get_campaign(db, payload["campaign_id"])
-    audience = audience_service.generate(
+    generation = generation_service.create_generation(
         db,
         campaign=campaign,
         budget=payload.get("budget"),
         operator_email=principal["email"],
-        note=payload.get("note"),
+        request_id=payload.get("request_id"),
+    )
+    generation_service.run_generation(db, generation)
+    audience = generation_service.publish(
+        db, generation, actor=principal["email"], note=payload.get("note")
     )
     audit_service.record(
         db,
@@ -36,6 +45,7 @@ def generate(db: Session, payload: dict, principal: dict, request: Request) -> d
         detail={
             "audience_no": audience.audience_no,
             "campaign": campaign.code,
+            "request_id": generation.request_id,
             "budget": audience.budget,
             "members": audience.member_count,
             "inc_orders": audience.inc_orders,

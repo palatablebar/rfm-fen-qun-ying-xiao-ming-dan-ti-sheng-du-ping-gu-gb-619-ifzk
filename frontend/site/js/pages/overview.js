@@ -30,8 +30,13 @@ export const overviewPage = {
   async render(view, ctx) {
     view.innerHTML = '<div class="empty"><div class="mark">正在对账会员与订单…</div></div>';
     let data;
+    let cityQuotas = null;
     try {
       data = await api.get('/api/overview');
+      const active = (data.campaigns || [])[0];
+      if (active) {
+        cityQuotas = await api.get(`/api/campaigns/${active.id}/city-quotas`);
+      }
     } catch (err) {
       view.innerHTML = errorBox(errorMessage(err));
       view.querySelector('#retry-btn')?.addEventListener('click', () => overviewPage.render(view, ctx));
@@ -135,7 +140,36 @@ export const overviewPage = {
             </table>
           </div>
         </div>
-      </section>`;
+      </section>
+
+      ${
+        cityQuotas
+          ? `<section class="panel">
+               <div class="panel-head">
+                 <h2>八城预算配额</h2>
+                 <span class="meta">${esc(cityQuotas.campaign_name)} · 总预算 ${fmtMoney(cityQuotas.budget)} · 城市间互不抢占</span>
+               </div>
+               <div class="table-wrap"><table class="data">
+                 <thead><tr><th>城市</th><th>配额权重</th><th>预算配额</th><th>会员池</th>
+                   <th>已发布占用</th><th>已发布人数</th><th>未用余额</th></tr></thead>
+                 <tbody>${(cityQuotas.items || [])
+                   .map(
+                     (row) => `<tr>
+                       <td><b>${esc(row.city)}</b></td>
+                       <td class="num">${fmtPct(row.budget_weight, 1)}</td>
+                       <td class="num">${fmtMoney(row.quota_budget)}</td>
+                       <td class="num">${fmtNum(row.member_pool)}</td>
+                       <td class="num">${fmtMoney(row.committed_spend)}</td>
+                       <td class="num">${fmtNum(row.committed_members)}</td>
+                       <td class="num"><b>${fmtMoney(row.unused_budget)}</b></td>
+                     </tr>`,
+                   )
+                   .join('')}</tbody>
+               </table></div>
+               <div class="panel-body note">每城按本地人群表现独立试算；人不够城市的余额在名单发布前才统一调剂，试算阶段保留在本城。</div>
+             </section>`
+          : ''
+      }`;
 
     view.querySelectorAll('.seg-tile').forEach((tile) => {
       tile.addEventListener('click', () => {

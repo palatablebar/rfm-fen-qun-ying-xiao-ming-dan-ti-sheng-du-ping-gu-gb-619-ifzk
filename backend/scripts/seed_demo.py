@@ -18,8 +18,10 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func, insert, select
 
 from src.config.database import session_scope
+from src.constants.enums import CITY_RESPONSE_FACTORS
 from src.models.audit import AuditLog
 from src.models.campaign import Campaign
+from src.models.generation import AudienceGeneration
 from src.models.member import Member
 from src.models.order import Order
 from src.models.segment import Segment
@@ -33,6 +35,7 @@ from scripts.demo_config import (
     CAMPAIGNS,
     CHANNELS,
     CITIES,
+    CITY_WEIGHTS,
     DEMO_PASSWORD,
     DEMO_USERS,
     GIVEN,
@@ -63,6 +66,7 @@ def _build_dataset() -> tuple[list[dict], list[dict], dict[str, dict]]:
     rng = random.Random(RANDOM_SEED)
     archetype_by_key = {item["key"]: item for item in ARCHETYPES}
     weights = [(item["key"], item["weight"]) for item in ARCHETYPES]
+    city_choices = [(city, CITY_WEIGHTS[city]) for city in CITIES]
 
     plans: list[dict] = []
     for index in range(MEMBER_TARGET):
@@ -139,7 +143,9 @@ def _build_dataset() -> tuple[list[dict], list[dict], dict[str, dict]]:
         orders_window = len(in_window)
         amount_window = round(sum(in_window), 2)
         avg_ticket = round(sum(amounts) / len(amounts), 2) if amounts else 0.0
-        rate = round(profile["rate"] * rng.uniform(0.82, 1.18), 6)
+        city = _pick_weighted(rng, city_choices)
+        # 城市券响应系数：制造上海高响应、成都/武汉低响应的地域差异
+        rate = round(profile["rate"] * rng.uniform(0.82, 1.18) * CITY_RESPONSE_FACTORS[city], 6)
         tier = profile["tier"]
         if tier == "silver" and rng.random() < 0.18:
             tier = "gold"
@@ -150,7 +156,7 @@ def _build_dataset() -> tuple[list[dict], list[dict], dict[str, dict]]:
                 "member_no": member_no,
                 "name": rng.choice(SURNAMES) + rng.choice(GIVEN),
                 "phone": "1" + rng.choice("35789") + "".join(str(rng.randint(0, 9)) for _ in range(9)),
-                "city": rng.choice(CITIES),
+                "city": city,
                 "tier": tier,
                 "joined_on": joined_on,
                 "last_order_at": last_paid,
@@ -258,20 +264,28 @@ def ensure_campaigns(db) -> int:
 
 def ensure_audiences(db) -> int:
     from src.models.audience import Audience
+    from src.services import generation_service
 
     campaigns = {item.code: item for item in db.scalars(select(Campaign)).all()}
     for seed_key, campaign_code, note in SEED_AUDIENCES:
         campaign = campaigns.get(campaign_code)
         if campaign is None:
             continue
-        audience_service.generate(
+        # 幂等：同 seed_key 的生成任务已存在则跳过（续跑/重跑不重复占额）
+        existed = db.scalar(
+            select(AudienceGeneration).where(AudienceGeneration.seed_key == seed_key)
+        )
+        if existed is not None:
+            continue
+        generation = generation_service.create_generation(
             db,
             campaign=campaign,
             budget=None,
             operator_email="seed@rfmseg.io",
-            note=note,
             seed_key=seed_key,
         )
+        generation_service.run_generation(db, generation)
+        generation_service.publish(db, generation, actor="seed@rfmseg.io", note=note)
     db.flush()
     return db.scalar(select(func.count()).select_from(Audience)) or 0
 

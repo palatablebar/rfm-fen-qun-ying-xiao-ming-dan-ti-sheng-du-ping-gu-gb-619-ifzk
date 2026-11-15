@@ -1175,3 +1175,53 @@ pre.code {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- 八城独立配额：城市核对与分群折叠明细 ---- */
+.city-table tfoot td {
+  border-top: 2px solid var(--rule-strong);
+  background: color-mix(in oklch, var(--paper) 70%, var(--tea) 6%);
+  font-weight: 700;
+}
+
+.city-detail {
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.city-detail > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  list-style: none;
+  user-select: none;
+}
+
+.city-detail > summary::-webkit-details-marker {
+  display: none;
+}
+
+.city-detail > summary::before {
+  content: '▸';
+  color: var(--tea);
+  transition: transform 0.15s ease;
+}
+
+.city-detail[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.city-detail[open] > summary {
+  border-bottom: 1px solid var(--rule);
+}
+
+.city-detail .table-wrap {
+  margin: 10px 14px 14px;
+}
+
+.city-detail .mini {
+  font-weight: 400;
+}

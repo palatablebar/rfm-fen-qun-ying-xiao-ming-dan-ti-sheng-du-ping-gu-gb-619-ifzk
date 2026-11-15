@@ -17,6 +17,7 @@ router = APIRouter(prefix="/audiences", tags=["audiences"])
 def list_audiences(
     campaign_id: int | None = Query(default=None, ge=1),
     status: str | None = Query(default=None, max_length=16),
+    current_only: bool = Query(default=False),
     limit: int = Query(20),
     offset: int = Query(0),
     db: Session = Depends(get_db),
@@ -24,7 +25,12 @@ def list_audiences(
 ) -> dict:
     page = page_params(limit, offset)
     return audience_controller.list_audiences(
-        db, campaign_id=campaign_id, status=status, limit=page.limit, offset=page.offset
+        db,
+        campaign_id=campaign_id,
+        status=status,
+        current_only=current_only,
+        limit=page.limit,
+        offset=page.offset,
     )
 
 
